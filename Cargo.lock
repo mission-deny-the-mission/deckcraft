@@ -925,6 +925,7 @@ version = "0.6.1"
 dependencies = [
  "deckcraft-engine",
  "deckcraft-mcp",
+ "deckcraft-storage",
  "serde_json",
 ]
 
@@ -1122,6 +1123,18 @@ dependencies = [
  "skrifa 0.47.0",
  "vello_common 0.2.0",
  "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "deckcraft-storage"
+version = "0.6.1"
+dependencies = [
+ "base64",
+ "deckcraft-model",
+ "deckcraft-pptx",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
