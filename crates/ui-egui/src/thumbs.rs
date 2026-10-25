@@ -11,7 +11,11 @@ use crate::theme::{self, Tokens};
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let in_master = app.session.active().is_some_and(|d| d.selection.target != Target::Slides);
-    egui::Panel::left("thumbs")
+    // Handout Master view has one page and no thumbnails, as in PowerPoint.
+    if app.session.active().is_some_and(|d| d.selection.target.is_page_master()) {
+        return;
+    }
+    let panel = egui::Panel::left("thumbs")
         .resizable(true)
         .default_size(app.ui.thumbs_width)
         .size_range(150.0..=420.0)
@@ -22,12 +26,18 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
                 master_list(app, ui);
                 return;
             }
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.add_space(8.0);
                 list(app, ui);
                 ui.add_space(20.0);
             });
+            // Where the pane is scrolled to, for the control channel and tests (#917).
+            app.ui.thumbs_scroll = out.state.offset.y;
         });
+    // Focus follows the last press: inside the pane keeps it, anywhere else (canvas, ribbon) drops it.
+    if let Some(pos) = ui.input(|i| if i.pointer.primary_pressed() { i.pointer.interact_pos() } else { None }) {
+        app.slides_focused = panel.response.rect.contains(pos);
+    }
 }
 
 fn list(app: &mut SlideApp, ui: &mut Ui) {
@@ -39,6 +49,16 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
     let width = ui.available_width();
     let tw = (width - 40.0).max(60.0);
     let th = tw * (doc.slide_size.height / doc.slide_size.width.max(1.0)) as f32;
+    // Scroll the current slide into view when it changes, so arrow-key navigation follows
+    // along in the pane (#917). The scroll itself is minimal, only when the thumbnail leaves
+    // the view, as in PowerPoint, so the user's own scrolling stands; the first frame only
+    // records the slide.
+    let scroll_key = ui.id().with("thumb_scrolled_to");
+    let slide_changed = ui.data_mut(|d| {
+        let last: Option<usize> = d.get_temp(scroll_key);
+        d.insert_temp(scroll_key, cur);
+        last.is_some_and(|last| last != cur)
+    });
     let ppp = ui.ctx().pixels_per_point();
     let mut budget = 3u32;
     let mut rects = vec![];
@@ -86,7 +106,7 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
             });
         }
         let (row, resp) = ui.allocate_exact_size(vec2(width, th + 16.0), Sense::click_and_drag());
-        let img = Rect::from_min_size(pos2(row.min.x + 30.0, row.min.y + 6.0), vec2(tw, th));
+        let img = crate::textures::device_pixel_rect(Rect::from_min_size(pos2(row.min.x + 30.0, row.min.y + 6.0), vec2(tw, th)), ppp);
         rects.push((i, row));
         let p = ui.painter();
         let id = doc.slides.get(i).map(|s| s.id);
@@ -106,8 +126,12 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
         if has_anim {
             p.text(pos2(row.min.x + 14.0, img.min.y + 20.0), Align2::CENTER_TOP, "★", theme::font(10.0), t.text_faint);
         }
-        let wpx = (tw * ppp).round() as u32;
-        match app.textures.thumb(ui.ctx(), &doc, i, wpx, &mut budget) {
+        let wpx = (img.width() * ppp).round() as u32;
+        // Only rows in view (plus a little margin) ask for a thumbnail: with every row asking, a
+        // deck bigger than the thumbnail cache evicts its own thumbnails and never settles (#969).
+        let near = ui.clip_rect().expand2(vec2(0.0, 2.0 * row.height())).intersects(row);
+        let tex = if near { app.textures.thumb(ui.ctx(), &doc, i, wpx, &mut budget) } else { None };
+        match tex {
             Some(tex) => {
                 p.image(
                     tex.id(),
@@ -118,7 +142,7 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
             }
             None => {
                 p.rect_filled(img, CornerRadius::ZERO, Color32::WHITE);
-                need_more = true;
+                need_more |= near;
             }
         }
         if selected {
@@ -157,6 +181,10 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
     }
     if need_more {
         ui.ctx().request_repaint();
+    }
+    // Scroll the current slide's thumbnail into view when the slide changes (#917).
+    if slide_changed && let Some((_, row_rect)) = rects.iter().find(|(i, _)| *i == cur) {
+        ui.scroll_to_rect(*row_rect, None);
     }
     // Drag reorder: insertion line.
     if let Some((from, _)) = app.thumb_drag {
@@ -268,22 +296,25 @@ fn master_list(app: &mut SlideApp, ui: &mut Ui) {
                 let tw = (width - indent - 14.0).max(40.0) * if li.is_some() { 0.8 } else { 1.0 };
                 let th = tw * (doc.slide_size.height / doc.slide_size.width.max(1.0)) as f32;
                 let (row, resp) = ui.allocate_exact_size(vec2(width, th + 12.0), Sense::click());
-                let img = Rect::from_min_size(pos2(row.min.x + indent, row.min.y + 4.0), vec2(tw, th));
                 let ppp = ui.ctx().pixels_per_point();
-                let px = ((tw * ppp) as u32).max(1);
+                let img = crate::textures::device_pixel_rect(Rect::from_min_size(pos2(row.min.x + indent, row.min.y + 4.0), vec2(tw, th)), ppp);
+                let wpx = ((img.width() * ppp).round() as u32).max(1);
+                let px = crate::textures::fit_size(
+                    (wpx, (wpx as f64 * doc.slide_size.height / doc.slide_size.width.max(1.0)).clamp(1.0, 1e9) as u32),
+                    crate::textures::max_side(ui.ctx()),
+                );
                 let pic = deckcraft_render::render_layout(
                     &doc,
                     mi,
                     li,
                     &deckcraft_render::RenderOpts {
-                        scale: px as f64 / doc.slide_size.width.max(1.0),
+                        scale: px.0 as f64 / doc.slide_size.width.max(1.0),
                         edit: true,
-                        size: Some((px, (px as f64 * doc.slide_size.height / doc.slide_size.width.max(1.0)) as u32)),
+                        size: Some(px),
                         ..Default::default()
                     },
                 );
-                let tex =
-                    ui.ctx().load_texture(format!("ml-{mi}-{li:?}"), crate::textures::to_color_image(&pic, false), egui::TextureOptions::LINEAR);
+                let tex = crate::textures::upload_editor(ui.ctx(), format!("ml-{mi}-{li:?}"), crate::textures::to_color_image(&pic, false));
                 ui.painter().image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 let selected = match (target, li) {
                     (Target::Master { master }, None) => master == mi,
@@ -311,4 +342,59 @@ fn master_list(app: &mut SlideApp, ui: &mut Ui) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use egui_kittest::Harness;
+
+    use super::*;
+    use crate::Services;
+    use deckcraft_engine::Session;
+
+    fn harness() -> Harness<'static, SlideApp> {
+        let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        h.run_steps(3);
+        h
+    }
+
+    /// Vertical scroll offset of the thumbnail pane, as recorded each frame by `show`.
+    fn thumbs_scroll(h: &Harness<'_, SlideApp>) -> f32 {
+        h.state().ui.thumbs_scroll
+    }
+
+    /// #917: navigating to a slide below the fold scrolls the pane to reveal it; a neighbour
+    /// that is already on screen does not move the pane.
+    #[test]
+    fn navigating_slides_keeps_the_current_thumbnail_visible() {
+        let mut h = harness();
+        for _ in 0..30 {
+            h.state_mut().session.execute("slide.new", &json!({})).unwrap();
+        }
+        // slide.new selects each new slide; back to the first so the pane starts at the top.
+        h.state_mut().session.execute("slide.go", &json!({"index": 0})).unwrap();
+        h.run_steps(3);
+        let last = h.state().session.active().unwrap().doc.slides.len() - 1;
+        assert_eq!(thumbs_scroll(&h), 0.0, "the pane starts at the top");
+
+        // Jump to the last slide: the pane follows and reveals it.
+        h.state_mut().session.execute("slide.go", &json!({"index": last})).unwrap();
+        h.run_steps(120); // the scroll eases in over several frames
+        let jumped = thumbs_scroll(&h);
+        assert!(jumped > 100.0, "the pane scrolled to the last slide, offset {jumped}");
+
+        // One slide up was already on screen after that scroll: the pane holds still.
+        h.state_mut().session.execute("slide.go", &json!({"index": last - 1})).unwrap();
+        h.run_steps(120);
+        let held = thumbs_scroll(&h);
+        assert!((held - jumped).abs() < 1.0, "no re-scroll for a visible slide: {jumped} -> {held}");
+    }
 }

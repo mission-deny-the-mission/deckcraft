@@ -100,8 +100,15 @@ pub fn parents<'a>(ctx: &Ctx<'a>, shape: &Shape) -> (Option<&'a Shape>, Option<&
     }
 }
 
-/// The text style group (title / body / other) a shape draws from.
+/// The text style group (title / body / other) a shape draws from. Text in a table takes the
+/// master's other-text style, also when the table sits in a content placeholder, as in PowerPoint
+/// for Mac (a table cell is 14 pt under an `otherStyle` of 14 pt, a `defaultTextStyle` of 26 pt and
+/// a bulleted 36 pt `bodyStyle`, with or without `<p:ph idx="1"/>`, while a shape's or a text box's
+/// text is 26 pt); other shapes take the presentation's default text style.
 pub fn master_list_style<'a>(ctx: &Ctx<'a>, shape: &Shape) -> &'a ListStyle {
+    if matches!(shape.kind, crate::ShapeKind::Table(_)) {
+        return &ctx.master.other_style;
+    }
     match shape.ph_type() {
         Some(PhType::Title | PhType::CtrTitle) => &ctx.master.title_style,
         Some(
@@ -241,13 +248,16 @@ pub fn body(ctx: &Ctx, shape: &Shape) -> BodyProps {
         warp_adj: Vec::new(),
         rtl_col: Some(false),
         upright: Some(false),
+        space_first_last: Some(false),
     });
     b
 }
 
 /// The merged level style (paragraph + run defaults) for paragraphs at `level` in `shape`.
 pub fn level_style(ctx: &Ctx, shape: &Shape, level: u8) -> LevelStyle {
-    let (lp, mp) = parents(ctx, shape);
+    // A table's text inherits nothing from a placeholder the table sits in: PowerPoint draws it in
+    // the other-text style even under list styles on the layout's and master's placeholders.
+    let (lp, mp) = if matches!(shape.kind, crate::ShapeKind::Table(_)) { (None, None) } else { parents(ctx, shape) };
     let mut out = LevelStyle::default();
     let add = |out: &mut LevelStyle, ls: Option<&LevelStyle>| {
         if let Some(l) = ls {
@@ -284,16 +294,22 @@ pub fn level_style(ctx: &Ctx, shape: &Shape, level: u8) -> LevelStyle {
 /// Fully resolved run properties for `run` in paragraph `para` (explicit → paragraph style).
 pub fn run(ctx: &Ctx, shape: &Shape, para: &crate::text::Paragraph, run: &RunProps) -> RunProps {
     let mut r = run.clone();
+    // Paragraph `defRPr` fills gaps in the run, and the list style (including the layout
+    // placeholder this shape inherits from) fills whatever is still unset.
+    r.inherit(&para.def_props);
     let lvl = level_style(ctx, shape, para.level);
     r.inherit(&lvl.run);
     // Hyperlinked text is drawn in the theme's hyperlink colour and underlined, as in PowerPoint,
     // unless the run itself sets a colour (honoured since PowerPoint 2019) or an underline
     // (`u="none"` removes it). Colours and underlines from list styles don't count.
     if r.link.is_some() {
-        if run.fill.is_none() {
+        // A colour or underline on the run, or on the same `defRPr` that carries the link, is
+        // kept. A colour that arrived only from a list style is not.
+        let from_def = run.link.is_none();
+        if run.fill.is_none() && !(from_def && para.def_props.fill.is_some()) {
             r.fill = Some(Fill::solid(ColorRef::scheme(SchemeSlot::Hlink)));
         }
-        if run.underline.is_none() {
+        if run.underline.is_none() && !(from_def && para.def_props.underline.is_some()) {
             r.underline = Some("sng".into());
         }
     }

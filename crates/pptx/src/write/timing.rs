@@ -1,7 +1,7 @@
 //! Transitions and the animation timing tree.
 
-use deckcraft_model::anim::{AnimClass, AnimStart, Animation, TextBuild, Transition};
-use deckcraft_model::{Shape, ShapeKind, find_shape};
+use deckcraft_model::anim::{AnimClass, AnimStart, Animation, BuildRole, TextBuild, Transition, build_filled, paragraph_build_roles};
+use deckcraft_model::{Shape, ShapeId, ShapeKind, find_shape};
 
 use super::shapes::IdMap;
 use super::{Exp, Out};
@@ -16,13 +16,18 @@ pub fn transition(w: &mut W, x: &mut Exp, o: &mut Out, t: &Transition) {
         601..=900 => "med",
         _ => "slow",
     };
-    let sound = t.sound.and_then(|m| x.media_rel(o, m, "audio"));
+    let sound = t.sound.and_then(|m| x.media_rel(o, m, "audio").map(|r| (r, x.p.media(m).map(|i| i.name.clone()).unwrap_or_default())));
     let snd = |w: &mut W| {
-        if let Some(r) = &sound {
+        if let Some((r, name)) = &sound {
             w.open0("p:sndAc");
-            w.open0("p:stSnd");
-            w.empty("p:snd", A::new().a("r:embed", r).a("name", "sound.wav"));
+            w.open("p:stSnd", A::new().t("loop", t.sound_loop));
+            let name = if name.is_empty() { "sound.wav" } else { name.as_str() };
+            w.empty("p:snd", A::new().a("r:embed", r).a("name", name));
             w.close("p:stSnd");
+            w.close("p:sndAc");
+        } else if t.stop_sound {
+            w.open0("p:sndAc");
+            w.empty0("p:endSnd");
             w.close("p:sndAc");
         }
     };
@@ -208,14 +213,14 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
                 "randombar(horizontal)"
             }
         }
-        "blinds" => {
+        "blinds" | "blindsOut" => {
             if option == "vert" {
                 "blinds(vertical)"
             } else {
                 "blinds(horizontal)"
             }
         }
-        "box" => {
+        "box" | "boxOut" => {
             if option == "out" {
                 "box(out)"
             } else {
@@ -229,7 +234,7 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
                 "circle(in)"
             }
         }
-        "diamond" => {
+        "diamond" | "diamondOut" => {
             if option == "out" {
                 "diamond(out)"
             } else {
@@ -246,7 +251,7 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
             "plusOut" => "plus(out)",
             _ => "circle(in)",
         },
-        "checkerboard" => {
+        "checkerboard" | "checkerboardOut" => {
             if option == "down" {
                 "checkerboard(down)"
             } else {
@@ -261,13 +266,13 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
             "8" => "wheel(8)",
             _ => "wheel(1)",
         },
-        "strips" => match option {
+        "strips" | "stripsOut" => match option {
             "ru" => "strips(upRight)",
             "ld" => "strips(downLeft)",
             "rd" => "strips(downRight)",
             _ => "strips(upLeft)",
         },
-        "peek" => match option {
+        "peek" | "peekOut" => match option {
             "t" => "slide(fromTop)",
             "l" => "slide(fromLeft)",
             "r" => "slide(fromRight)",
@@ -328,7 +333,12 @@ fn behaviors(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff) {
                     anim_prop(w, ids, e, dur, "ppt_x", "#ppt_x", fx);
                     anim_prop(w, ids, e, dur, "ppt_y", "#ppt_y", fy);
                 }
-                "zoomOut" | "shrinkTurn" => {
+                "floatOut" | "sinkDown" => {
+                    let to = if a.effect == "sinkDown" || a.option == "d" { "#ppt_y+.1" } else { "#ppt_y-.1" };
+                    anim_prop(w, ids, e, dur, "ppt_y", "#ppt_y", to);
+                    anim_effect(w, ids, e, dur, "fade", true);
+                }
+                "zoomOut" | "shrinkTurn" | "spinnerOut" | "contract" => {
                     anim_prop(w, ids, e, dur, "ppt_w", "#ppt_w", "0");
                     anim_prop(w, ids, e, dur, "ppt_h", "#ppt_h", "0");
                     anim_effect(w, ids, e, dur, "fade", true);
@@ -353,6 +363,25 @@ fn behaviors(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff) {
                 w.val("p:strVal", format!("{:.2}", (1.0 - a.amount.unwrap_or(0.5)).clamp(0.0, 1.0)));
                 w.close("p:to");
                 w.close("p:set");
+            }
+            "colorPulse" => {
+                // As PowerPoint writes it: text and fill go to the colour and back (autoRev). The behaviour
+                // duration is the one import reads as the effect duration.
+                let c = a.color.clone().unwrap_or(deckcraft_model::ColorRef::rgb(deckcraft_color::Rgba::rgb(0xC0, 0x00, 0x00)));
+                for (attr, child) in [("style.color", true), ("fillcolor", false)] {
+                    w.open("p:animClr", A::new().a("clrSpc", "rgb").a("dir", "cw"));
+                    w.open("p:cBhvr", A::new().o("override", child.then_some("childStyle")));
+                    w.empty("p:cTn", A::new().a("id", ids.next()).a("dur", dur.max(1)).a("autoRev", "1").a("fill", "remove"));
+                    tgt(w, e.spid, e.paragraph);
+                    w.open0("p:attrNameLst");
+                    w.elt("p:attrName", attr);
+                    w.close("p:attrNameLst");
+                    w.close("p:cBhvr");
+                    w.open0("p:to");
+                    super::dml::color(w, &c);
+                    w.close("p:to");
+                    w.close("p:animClr");
+                }
             }
             "fillColor" | "objectColor" | "fontColor" | "lineColor" | "complementaryColor" | "darken" | "lighten" => {
                 let attr = match a.effect.as_str() {
@@ -425,7 +454,11 @@ fn effect_par(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff, first_in_click: bo
     };
     let _ = first_in_click;
     let preset = crate::maps::preset_for(a);
-    let sub = crate::maps::subtype_from_option(&a.effect, &a.option).or(a.preset_subtype.filter(|_| a.preset_id == Some(preset))).unwrap_or(0);
+    let sub = if preset == 47 {
+        0
+    } else {
+        crate::maps::subtype_from_option(&a.effect, &a.option).or(a.preset_subtype.filter(|_| a.preset_id == Some(preset))).unwrap_or(0)
+    };
     let repeat = match a.repeat {
         u32::MAX => Some("indefinite".to_string()),
         0 | 1 => None,
@@ -433,6 +466,9 @@ fn effect_par(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff, first_in_click: bo
     };
     let accel = (a.smooth_start > 0.0).then(|| (a.smooth_start.clamp(0.0, 1.0) * 100_000.0).round() as i64);
     let decel = (a.smooth_end > 0.0).then(|| (a.smooth_end.clamp(0.0, 1.0) * 100_000.0).round() as i64);
+    // `bounceEnd` is a positive percentage (100000 = 100%), same scale as accel/decel. The model stores 0–1.
+    let bounce =
+        (a.bounce_end.is_finite() && a.bounce_end > 0.0).then(|| (a.bounce_end.clamp(0.0, 1.0) * 100_000.0).round() as i64).filter(|n| *n > 0);
     w.open0("p:par");
     w.open(
         "p:cTn",
@@ -444,8 +480,9 @@ fn effect_par(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff, first_in_click: bo
             .o("repeatCount", repeat)
             .o("accel", accel)
             .o("decel", decel)
+            .o("bounceEnd", bounce)
             .t("autoRev", a.auto_reverse)
-            .a("fill", "hold")
+            .a("fill", if a.rewind { "remove" } else { "hold" })
             .a("grpId", e.grp)
             .a("nodeType", node),
     );
@@ -528,53 +565,68 @@ fn click_pars(w: &mut W, x: &mut Exp, ids: &mut Ids, clicks: &Groups, interactiv
     }
 }
 
-fn para_count(s: &Shape) -> u32 {
-    s.text.as_ref().map(|t| t.paragraphs.iter().filter(|p| !p.is_empty()).count()).unwrap_or(0).min(10_000) as u32
-}
-
 /// Write `p:timing` for a slide's animations.
 pub fn timing(w: &mut W, x: &mut Exp, anims: &[Animation], shapes: &[Shape], idmap: &IdMap) {
     let mut grp_count: std::collections::HashMap<u32, u32> = Default::default();
     let mut main: Vec<Eff> = vec![];
     let mut triggered: Vec<(u32, Vec<Eff>)> = vec![];
     let mut bld: Vec<(u32, u32, bool)> = vec![];
+    // The last paragraph effect written: (shape, class, trigger, grpId).
+    let mut prev_para: Option<(ShapeId, AnimClass, Option<ShapeId>, u32)> = None;
     for a in anims.iter().take(10_000) {
         let Some(spid) = idmap.get(a.shape) else {
             log::warn!("pptx: animation on missing shape {} skipped", a.shape);
             continue;
         };
         let Some(shape) = find_shape(shapes, a.shape) else { continue };
-        let grp = {
-            let c = grp_count.entry(spid).or_insert(0);
-            let g = *c;
-            *c += 1;
-            g
-        };
+        let text_sp = matches!(shape.kind, ShapeKind::Shape) && shape.text.is_some();
         let is_text_sp = matches!(shape.kind, ShapeKind::Shape) && shape.text.as_ref().is_some_and(|t| !t.is_empty());
-        let by_para = a.text_build == TextBuild::ByParagraph && is_text_sp && para_count(shape) > 0;
+        let text = shape.text.as_ref().filter(|_| a.text_build == TextBuild::ByParagraph && is_text_sp);
+        let roles = text.map(paragraph_build_roles).unwrap_or_default();
+        let by_para = roles.contains(&BuildRole::Top);
+        // PowerPoint keeps a shape's consecutive paragraph effects in one build (`grpId`) marked
+        // `build="p"`; the reader turns them back into a by-paragraph build only if that plays them
+        // the same way.
+        let para_effect = !by_para && text_sp && a.paragraph.is_some();
+        let joins = para_effect && prev_para.is_some_and(|(s, c, t, _)| s == a.shape && c == a.class && t == a.trigger);
+        let grp = match prev_para {
+            Some((.., g)) if joins => g,
+            _ => {
+                let c = grp_count.entry(spid).or_insert(0);
+                let g = *c;
+                *c += 1;
+                g
+            }
+        };
+        prev_para = para_effect.then_some((a.shape, a.class, a.trigger, grp));
         let mut effs = vec![];
         if by_para {
-            // Paragraph indices in the file count empty paragraphs too.
-            let idxs: Vec<u32> = shape
-                .text
-                .as_ref()
-                .map(|t| t.paragraphs.iter().enumerate().filter(|(_, p)| !p.is_empty()).map(|(i, _)| i as u32).collect())
-                .unwrap_or_default();
-            for (k, pi) in idxs.into_iter().enumerate() {
-                let start = if k == 0 {
-                    a.start
-                } else if a.start == AnimStart::OnClick {
-                    AnimStart::OnClick
-                } else {
-                    AnimStart::AfterPrevious
+            // One effect per paragraph the build animates on its own, deeper ones with their
+            // parent; indices in the file count empty paragraphs too.
+            let mut tops = 0;
+            for (i, role) in roles.iter().enumerate() {
+                let start = match role {
+                    BuildRole::Top => {
+                        tops += 1;
+                        if tops == 1 {
+                            a.start
+                        } else if a.start == AnimStart::OnClick {
+                            AnimStart::OnClick
+                        } else {
+                            AnimStart::AfterPrevious
+                        }
+                    }
+                    BuildRole::Member(_) if text.and_then(|t| t.paragraphs.get(i)).is_some_and(build_filled) => AnimStart::WithPrevious,
+                    _ => continue,
                 };
+                let Ok(pi) = u32::try_from(i) else { break };
                 effs.push(Eff { a, spid, start, paragraph: Some(pi), grp });
             }
         } else {
             effs.push(Eff { a, spid, start: a.start, paragraph: a.paragraph, grp });
         }
-        if matches!(shape.kind, ShapeKind::Shape) && shape.text.is_some() {
-            bld.push((spid, grp, by_para));
+        if text_sp && !joins {
+            bld.push((spid, grp, by_para || para_effect));
         }
         match a.trigger.and_then(|t| idmap.get(t)) {
             Some(t) => match triggered.iter_mut().find(|(s, _)| *s == t) {
@@ -618,21 +670,10 @@ pub fn timing(w: &mut W, x: &mut Exp, anims: &[Animation], shapes: &[Shape], idm
         w.close("p:seq");
     }
     for (trig, effs) in triggered {
-        // Everything a trigger starts plays from its click.
-        let effs: Vec<Eff> = effs
-            .into_iter()
-            .enumerate()
-            .map(|(i, e)| Eff {
-                start: if i == 0 {
-                    AnimStart::OnClick
-                } else if e.start == AnimStart::OnClick {
-                    AnimStart::AfterPrevious
-                } else {
-                    e.start
-                },
-                ..e
-            })
-            .collect();
+        // The first step starts with the button's click. Later On Click effects must remain
+        // separate steps; With/After Previous effects still belong to their preceding step.
+        let effs: Vec<Eff> =
+            effs.into_iter().enumerate().map(|(i, e)| Eff { start: if i == 0 { AnimStart::OnClick } else { e.start }, ..e }).collect();
         let clicks = group(effs);
         let trig_cond = |w: &mut W| {
             w.open("p:cond", A::new().a("evt", "onClick").a("delay", 0));
@@ -672,8 +713,8 @@ pub fn timing(w: &mut W, x: &mut Exp, anims: &[Animation], shapes: &[Shape], idm
     w.close("p:tnLst");
     if !bld.is_empty() {
         w.open0("p:bldLst");
-        for (spid, grp, by_para) in bld {
-            w.empty("p:bldP", A::new().a("spid", spid).a("grpId", grp).o("build", by_para.then_some("p")).t("animBg", !by_para));
+        for (spid, grp, build_p) in bld {
+            w.empty("p:bldP", A::new().a("spid", spid).a("grpId", grp).o("build", build_p.then_some("p")).t("animBg", !build_p));
         }
         w.close("p:bldLst");
     }

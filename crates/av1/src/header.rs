@@ -1,7 +1,14 @@
 //! Sequence header (5.5) and uncompressed frame header (5.9) parsing.
 
 use crate::bits::BitReader;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    AFFINE, ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, GM_ABS_ALPHA_BITS, GM_ABS_TRANS_BITS, GM_ABS_TRANS_ONLY_BITS, GM_ALPHA_PREC_BITS,
+    GM_TRANS_ONLY_PREC_BITS, GM_TRANS_PREC_BITS, GOLDEN_FRAME, IDENTITY, INTER_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME, MAX_SEGMENTS,
+    MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, NUM_REF_FRAMES, ONLY_4X4, PRIMARY_REF_NONE, REF_FRAME_LIST, REFS_PER_FRAME,
+    RESTORATION_TILESIZE_MAX, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER, ROTZOOM, SEG_LVL_ALT_Q, SEG_LVL_MAX,
+    SEG_LVL_REF_FRAME, SELECT_INTEGER_MV, SELECT_SCREEN_CONTENT_TOOLS, SUPERRES_DENOM_BITS, SUPERRES_DENOM_MIN, SUPERRES_NUM, SWITCH_FRAME,
+    TOTAL_REFS_PER_FRAME, TRANSLATION, TX_MODE_LARGEST, TX_MODE_SELECT, WARPEDMODEL_PREC_BITS,
+};
 use crate::{Error, Result};
 
 pub const EIGHTTAP: u8 = 0;
@@ -1256,6 +1263,7 @@ impl FrameHeader {
             g.point_y_value[i] = r.f(8)? as u8;
             g.point_y_scaling[i] = r.f(8)? as u8;
         }
+        check_increasing(&g.point_y_value[..g.num_y_points], "point_y_value")?;
         g.chroma_scaling_from_luma = if seq.color.mono_chrome { false } else { r.flag()? };
         if seq.color.mono_chrome
             || g.chroma_scaling_from_luma
@@ -1272,6 +1280,7 @@ impl FrameHeader {
                 g.point_cb_value[i] = r.f(8)? as u8;
                 g.point_cb_scaling[i] = r.f(8)? as u8;
             }
+            check_increasing(&g.point_cb_value[..g.num_cb_points], "point_cb_value")?;
             g.num_cr_points = r.f(4)? as usize;
             if g.num_cr_points > 10 {
                 return Err(Error::Invalid("num_cr_points"));
@@ -1280,6 +1289,7 @@ impl FrameHeader {
                 g.point_cr_value[i] = r.f(8)? as u8;
                 g.point_cr_scaling[i] = r.f(8)? as u8;
             }
+            check_increasing(&g.point_cr_value[..g.num_cr_points], "point_cr_value")?;
         }
         g.grain_scaling_minus_8 = r.f(2)?;
         g.ar_coeff_lag = r.f(2)?;
@@ -1365,5 +1375,25 @@ fn decode_subexp(r: &mut BitReader, num_syms: i32) -> Result<i32> {
         } else {
             return Ok(r.f(b2 as u32)? as i32 + mk);
         }
+    }
+}
+
+/// Film-grain scaling point values must strictly increase (AV1 spec 6.8.20); a duplicate would
+/// divide by zero when the scaling lookup is built.
+fn check_increasing(values: &[u8], what: &'static str) -> Result<()> {
+    if values.windows(2).all(|w| w[0] < w[1]) { Ok(()) } else { Err(Error::Invalid(what)) }
+}
+
+#[cfg(test)]
+mod grain_point_tests {
+    use super::*;
+
+    #[test]
+    fn scaling_points_must_strictly_increase() {
+        assert!(check_increasing(&[], "p").is_ok());
+        assert!(check_increasing(&[7], "p").is_ok());
+        assert!(check_increasing(&[0, 10, 255], "p").is_ok());
+        assert!(matches!(check_increasing(&[0, 10, 10], "point_y_value"), Err(Error::Invalid("point_y_value"))));
+        assert!(check_increasing(&[20, 10], "p").is_err());
     }
 }

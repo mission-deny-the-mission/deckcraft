@@ -33,7 +33,8 @@ pub struct SubPath {
 }
 
 /// A draggable adjust handle (the yellow dot). `pos = origin + dir * value`; dragging projects
-/// the pointer onto `dir`.
+/// the pointer onto `dir`. An `angle` handle instead measures the pointer's angle about `origin`
+/// (1/60 000 degree, y down, 0° at +x).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Handle {
     pub index: usize,
@@ -42,14 +43,29 @@ pub struct Handle {
     pub dir: Vec2,
     pub min: f64,
     pub max: f64,
+    pub angle: bool,
 }
 
 impl Handle {
     fn new(index: usize, origin: Point, dir: Vec2, value: f64, min: f64, max: f64) -> Self {
-        Handle { index, pos: origin + dir * value, origin, dir, min, max }
+        Handle { index, pos: origin + dir * value, origin, dir, min, max, angle: false }
+    }
+    /// An angle handle on the `rx`×`ry` ellipse around `center` at visual angle `value`.
+    fn angle(index: usize, center: Point, rx: f64, ry: f64, value: f64) -> Self {
+        let t = vis(value / 60000.0, rx, ry).to_radians();
+        let pos = Point::new(center.x + rx * t.cos(), center.y + ry * t.sin());
+        Handle { index, pos, origin: center, dir: Vec2::ZERO, min: 0.0, max: 21600000.0, angle: true }
     }
     /// The adjust value for a pointer at `p` (shape-local space).
     pub fn value_at(&self, p: Point) -> f64 {
+        if self.angle {
+            let d = p - self.origin;
+            if !(d.x.is_finite() && d.y.is_finite()) || d.hypot() < 1e-9 {
+                return self.min;
+            }
+            let v = (d.y.atan2(d.x).to_degrees().rem_euclid(360.0) * 60000.0).round();
+            return if v >= self.max { self.min } else { v };
+        }
         let l2 = self.dir.hypot2();
         if l2 < 1e-18 {
             return self.min;
@@ -539,6 +555,27 @@ fn star(n: usize, w: f64, h: f64, inner: f64) -> Vec<(f64, f64)> {
         pts.push((w / 2.0 + r * rx * a.cos(), cy + r * ry * a.sin()));
     }
     pts
+}
+
+/// The text rectangle ECMA-376's presetShapeDefinitions give a star (`inner` is the adjust value
+/// over 50000), where known: star4's is the square inside its inner points, star5's spans the
+/// inner pentagon from its upper side points to its bottom inner point.
+fn star_text_rect(n: usize, w: f64, h: f64, inner: f64) -> Option<Rect> {
+    let (hc, vc) = (w / 2.0, h / 2.0);
+    match n {
+        4 => {
+            let (dx, dy) = (hc * inner * 45f64.to_radians().cos(), vc * inner * 45f64.to_radians().sin());
+            Some(Rect::new(hc - dx, vc - dy, hc + dx, vc + dy))
+        }
+        5 => {
+            let (swd2, shd2, svc) = (hc * 1.05146, vc * 1.10557, vc * 1.10557);
+            let (iwd2, ihd2) = (swd2 * inner, shd2 * inner);
+            let sdx1 = iwd2 * 18f64.to_radians().cos();
+            let sdy1 = ihd2 * 54f64.to_radians().sin();
+            Some(Rect::new(hc - sdx1, svc - sdy1, hc + sdx1, svc + ihd2))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1061,7 +1098,15 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
             b.m(p0.x, p0.y).arc(rx, ry, s0, sweep);
             let pi = Point::new(w / 2.0 + irx * si.to_radians().cos(), h / 2.0 + iry * si.to_radians().sin());
             b.l(pi.x, pi.y).arc(irx, iry, si, isweep).z();
-            simple(b.take(), full, w, h)
+            let mut g = simple(b.take(), full, w, h);
+            let c = Point::new(rx, ry);
+            g.handles.push(Handle::angle(0, c, rx - t / 2.0, ry - t / 2.0, a(0)));
+            // Thickness: slides inward from the outer edge along the end angle's ray.
+            let pe = Point::new(rx + rx * e0.to_radians().cos(), ry + ry * e0.to_radians().sin());
+            let u = (c - pe).normalize();
+            let u = if u.x.is_finite() && u.y.is_finite() { u } else { Vec2::ZERO };
+            g.handles.push(Handle::new(2, pe, u * (ss / 100000.0), a(2).clamp(0.0, 50000.0), 0.0, 50000.0));
+            g
         }
         "pie" | "chord" | "arc" => {
             let (rx, ry) = (w / 2.0, h / 2.0);
@@ -1074,7 +1119,7 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
             let p0 = Point::new(rx + rx * s.to_radians().cos(), ry + ry * s.to_radians().sin());
             b.m(p0.x, p0.y).arc(rx, ry, s, sw);
             let text = Rect::new(w * 0.14645, h * 0.14645, w * 0.85355, h * 0.85355);
-            match name {
+            let mut g = match name {
                 "pie" => {
                     b.l(rx, ry).z();
                     simple(b.take(), text, w, h)
@@ -1090,7 +1135,11 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
                     f.close_path();
                     Geometry { paths: vec![fill_only(f), stroke_only(open)], text_rect: text, handles: vec![], sites: mid_sites(w, h) }
                 }
-            }
+            };
+            let c = Point::new(rx, ry);
+            g.handles.push(Handle::angle(0, c, rx, ry, a(0)));
+            g.handles.push(Handle::angle(1, c, rx, ry, a(1)));
+            g
         }
         "teardrop" => {
             let k = a(0).clamp(0.0, 200000.0) / 100000.0;
@@ -1307,8 +1356,17 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
             } else {
                 vec![(0.0, 0.0), (w - d, 0.0), (w, h / 2.0), (w - d, h), (0.0, h), (d, h / 2.0)]
             };
-            let tx = if name == "homePlate" { 0.0 } else { d };
-            let mut g = simple(b.poly(&pts).take(), Rect::new(tx, 0.0, w - d / 2.0, h), w, h);
+            // Text rectangles as presetShapeDefinitions give them: homePlate's runs to halfway
+            // along the point; chevron's lies between the notch and the point's base (x1..x2)
+            // and covers the whole width once those meet or cross (`?: dx x1 l`).
+            let text = if name == "homePlate" {
+                Rect::new(0.0, 0.0, w - d / 2.0, h)
+            } else if w - d > d {
+                Rect::new(d, 0.0, w - d, h)
+            } else {
+                Rect::new(0.0, 0.0, w, h)
+            };
+            let mut g = simple(b.poly(&pts).take(), text, w, h);
             g.handles.push(Handle::new(0, Point::new(w, 0.0), Vec2::new(-ss / 1e5, 0.0), v, 0.0, 100000.0 * w / ss.max(1e-9)));
             g
         }
@@ -1615,7 +1673,8 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
             let n: usize = name.trim_start_matches("star").parse().unwrap_or(5);
             let v = a(0).clamp(0.0, 50000.0);
             let inner = v / 50000.0;
-            let mut g = simple(b.poly(&star(n, w, h, inner)).take(), full.inset(-ss * (0.5 - inner * 0.5) * 0.5), w, h);
+            let text = star_text_rect(n, w, h, inner).unwrap_or_else(|| full.inset(-ss * (0.5 - inner * 0.5) * 0.5));
+            let mut g = simple(b.poly(&star(n, w, h, inner)).take(), text, w, h);
             g.handles.push(Handle::new(0, Point::new(w / 2.0, h / 2.0), Vec2::new(0.0, -h / 2.0 / 50000.0), v, 0.0, 50000.0));
             g
         }
@@ -1790,7 +1849,7 @@ fn ellipse_sites(w: f64, h: f64) -> Vec<Point> {
 
 fn tip_handle(w: f64, h: f64, tip: Point) -> Handle {
     // A free 2-D handle is represented as index 0 with zero direction; callers move both values.
-    Handle { index: 0, pos: tip, origin: Point::new(w / 2.0, h / 2.0), dir: Vec2::new(w / 1e5, h / 1e5), min: -1e6, max: 1e6 }
+    Handle { index: 0, pos: tip, origin: Point::new(w / 2.0, h / 2.0), dir: Vec2::new(w / 1e5, h / 1e5), min: -1e6, max: 1e6, angle: false }
 }
 
 fn wedge_rect(w: f64, h: f64, a0: f64, a1: f64, r: f64) -> Geometry {
@@ -2222,6 +2281,135 @@ mod tests {
     }
 
     #[test]
+    fn partial_circle_angle_handles_map_back() {
+        // Start 0° sits at the right of the ellipse, end 270° at its top.
+        for name in ["pie", "chord", "arc"] {
+            let g = build(name, 200.0, 100.0, &[0.0, 16200000.0]).unwrap();
+            assert_eq!(g.handles.iter().map(|h| h.index).collect::<Vec<_>>(), vec![0, 1], "{name}");
+            let (s, e) = (&g.handles[0], &g.handles[1]);
+            assert!((s.pos - Point::new(200.0, 50.0)).hypot() < 1e-6, "{name} {:?}", s.pos);
+            assert!((e.pos - Point::new(100.0, 0.0)).hypot() < 1e-6, "{name} {:?}", e.pos);
+            assert_eq!(s.value_at(s.pos), 0.0, "{name}");
+            assert_eq!(e.value_at(e.pos), 16200000.0, "{name}");
+            // Dragging to the bottom of the ellipse gives 90°.
+            assert_eq!(s.value_at(Point::new(100.0, 100.0)), 5400000.0, "{name}");
+            // Off-axis angles on a non-square ellipse: the visual 45° ray meets the 200×100
+            // ellipse at offset (√2000, √2000) from the centre.
+            let k = 2000f64.sqrt();
+            let g = build(name, 200.0, 100.0, &[2700000.0, 8100000.0]).unwrap();
+            let (s, e) = (&g.handles[0], &g.handles[1]);
+            assert!((s.pos - Point::new(100.0 + k, 50.0 + k)).hypot() < 1e-6, "{name} {:?}", s.pos);
+            assert!((e.pos - Point::new(100.0 - k, 50.0 + k)).hypot() < 1e-6, "{name} {:?}", e.pos);
+            for (deg, h) in [(45.0, s), (135.0, e)] {
+                let on = ((h.pos.x - 100.0) / 100.0).powi(2) + ((h.pos.y - 50.0) / 50.0).powi(2);
+                assert!((on - 1.0).abs() < 1e-9, "{name} {deg}° off ellipse: {:?}", h.pos);
+                assert!((h.value_at(h.pos) - deg * 60000.0).abs() <= 1.0, "{name} {deg}°: {}", h.value_at(h.pos));
+            }
+        }
+        for deg in [45.0, 135.0, 200.0, 315.0] {
+            let g = build("blockArc", 200.0, 100.0, &[deg * 60000.0, 0.0, 25000.0]).unwrap();
+            let start = g.handles.iter().find(|h| h.index == 0).unwrap();
+            // Thickness 25 → the handle runs on the 87.5×37.5 mid-ring ellipse.
+            let on = ((start.pos.x - 100.0) / 87.5).powi(2) + ((start.pos.y - 50.0) / 37.5).powi(2);
+            assert!((on - 1.0).abs() < 1e-9, "blockArc {deg}° off ring: {:?}", start.pos);
+            let d = start.pos - Point::new(100.0, 50.0);
+            assert!((d.y.atan2(d.x).to_degrees().rem_euclid(360.0) - deg).abs() < 1e-6, "blockArc {deg}°: {:?}", start.pos);
+            assert!((start.value_at(start.pos) - deg * 60000.0).abs() <= 1.0, "blockArc {deg}°");
+        }
+        let g = build("blockArc", 200.0, 100.0, &[10800000.0, 0.0, 25000.0]).unwrap();
+        let start = g.handles.iter().find(|h| h.index == 0).unwrap();
+        assert_eq!(start.value_at(start.pos), 10800000.0);
+        let thick = g.handles.iter().find(|h| h.index == 2).unwrap();
+        assert!((thick.value_at(thick.pos) - 25000.0).abs() <= 1.0);
+    }
+
+    #[test]
+    fn presets_with_adjust_values_expose_handles() {
+        // Presets whose adjust values have no handle of their own yet.
+        const NO_HANDLES: &[&str] = &[
+            "curvedConnector3",
+            "snip2SameRect",
+            "snip2DiagRect",
+            "snipRoundRect",
+            "round1Rect",
+            "round2SameRect",
+            "round2DiagRect",
+            "teardrop",
+            "halfFrame",
+            "corner",
+            "diagStripe",
+            "foldedCorner",
+            "smileyFace",
+            "moon",
+            "gear6",
+            "gear9",
+            "bracketPair",
+            "bracePair",
+            "leftBracket",
+            "rightBracket",
+            "leftBrace",
+            "rightBrace",
+            "leftRightArrow",
+            "upDownArrow",
+            "quadArrow",
+            "leftRightUpArrow",
+            "bentArrow",
+            "uturnArrow",
+            "curvedRightArrow",
+            "curvedLeftArrow",
+            "curvedUpArrow",
+            "curvedDownArrow",
+            "leftUpArrow",
+            "bentUpArrow",
+            "circularArrow",
+            "leftCircularArrow",
+            "leftRightCircularArrow",
+            "swooshArrow",
+            "rightArrowCallout",
+            "downArrowCallout",
+            "leftArrowCallout",
+            "upArrowCallout",
+            "leftRightArrowCallout",
+            "upDownArrowCallout",
+            "quadArrowCallout",
+            "mathPlus",
+            "mathMinus",
+            "mathMultiply",
+            "mathDivide",
+            "mathEqual",
+            "mathNotEqual",
+            "ribbon2",
+            "ribbon",
+            "ellipseRibbon2",
+            "ellipseRibbon",
+            "leftRightRibbon",
+            "verticalScroll",
+            "horizontalScroll",
+            "wave",
+            "doubleWave",
+            "borderCallout1",
+            "borderCallout2",
+            "borderCallout3",
+            "accentCallout1",
+            "accentCallout2",
+            "accentCallout3",
+            "callout1",
+            "callout2",
+            "callout3",
+            "accentBorderCallout1",
+            "accentBorderCallout2",
+            "accentBorderCallout3",
+        ];
+        for p in CATALOG {
+            if p.defaults.is_empty() || NO_HANDLES.contains(&p.name) {
+                continue;
+            }
+            let g = build(p.name, 200.0, 100.0, &[]).unwrap();
+            assert!(!g.handles.is_empty(), "{} has adjust values but no handles", p.name);
+        }
+    }
+
+    #[test]
     fn rect_area_and_ellipse_area() {
         let g = build("rect", 100.0, 50.0, &[]).unwrap();
         assert!((g.paths[0].path.area().abs() - 5000.0).abs() < 1e-6);
@@ -2304,6 +2492,19 @@ mod tests {
         for (x, y) in [(0.18375, 0.00774), (0.84, 0.2), (1.0, 0.8), (0.16, 0.8)] {
             assert!(on_path(&g, Point::new(300.0 * x, 120.0 * y), 0.05), "shifted wave ({x}, {y})");
         }
+    }
+
+    #[test]
+    fn star_text_rectangles_follow_the_standard() {
+        // star5 at its default 19098 in a 144 pt square: the inner pentagon, about 0.38 of the
+        // width (PowerPoint wraps "Shape 3" at 18 pt there), from y ≈ 55 to ≈ 110.
+        let g = build("star5", 144.0, 144.0, &[]).unwrap();
+        let t = g.text_rect;
+        assert!((t.width() - 55.0).abs() < 1.0, "{t:?}");
+        assert!((t.y0 - 55.0).abs() < 1.0 && (t.y1 - 110.0).abs() < 1.0, "{t:?}");
+        // star4 at 12500: the square through its inner points' 45° corners.
+        let g = build("star4", 144.0, 144.0, &[]).unwrap();
+        assert!((g.text_rect.width() - 72.0 * 0.25 * 2f64.sqrt()).abs() < 0.5, "{:?}", g.text_rect);
     }
 
     #[test]

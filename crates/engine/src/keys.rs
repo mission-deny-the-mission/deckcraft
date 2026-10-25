@@ -54,8 +54,17 @@ impl Session {
         let has_shapes = self.active().is_some_and(|d| !d.selection.shapes.is_empty());
         let k = key_token(key);
         let k = k.as_str();
+        if matches!(k, "escape" | "esc") && self.cancel_point_drag() {
+            return Ok(json!({"handled": true}));
+        }
         if self.tool.drawing_freeform() && matches!(k, "enter" | "return" | "escape") {
             return self.finish_freeform(false);
+        }
+        if self.tool.edit_points.is_some() && matches!(k, "enter" | "return" | "escape") {
+            self.tool.edit_points = None;
+            self.tool.edit_vertex = None;
+            self.tool.edit_segment = None;
+            return Ok(json!({"handled": true, "command": "shape.editPoints"}));
         }
         if editing && let Some((id, params)) = self.text_key(k, mods) {
             let r = self.execute(id, &params)?;
@@ -81,6 +90,21 @@ impl Session {
             };
             if let Some(r) = r {
                 r?;
+                return Ok(json!({"handled": true}));
+            }
+        }
+        if !editing && has_shapes && !mods.cmd && mods.shift && !mods.alt {
+            // Shift+arrow grows or shrinks a selected range of table cells.
+            let d = match k {
+                "left" => Some((0, -1)),
+                "right" => Some((0, 1)),
+                "up" => Some((-1, 0)),
+                "down" => Some((1, 0)),
+                _ => None,
+            };
+            if let Some((dr, dc)) = d
+                && crate::cmd::table::extend_selected_cells(self, dr, dc)?
+            {
                 return Ok(json!({"handled": true}));
             }
         }
@@ -285,15 +309,22 @@ impl Session {
         let Some(t) = st.selection.text.clone() else { return Ok(Value::Null) };
         let Some((r, c)) = t.cell else { return Ok(Value::Null) };
         let Some(deckcraft_model::ShapeKind::Table(tb)) = st.shape(t.shape).map(|s| s.kind.clone()) else { return Ok(Value::Null) };
-        let (nr, nc) = (tb.n_rows(), tb.n_cols());
+        let (nr, nc) = (tb.n_rows(), tb.n_cols().max(1));
         let idx = r * nc + c;
-        if !back && idx + 1 >= nr * nc {
-            // Tab in the last cell adds a row.
-            self.execute("table.insertRowBelow", &json!({"id": t.shape, "row": r}))?;
-            return self.execute("text.edit", &json!({"id": t.shape, "cell": [r + 1, 0]}));
-        }
-        let ni = if back { idx.saturating_sub(1) } else { idx + 1 };
-        self.execute("text.edit", &json!({"id": t.shape, "cell": [ni / nc.max(1), ni % nc.max(1)]}))?;
+        // Cells hidden under a merged cell are skipped.
+        let visible = |i: &usize| tb.cell(i / nc, i % nc).is_some_and(|x| !x.is_covered());
+        let next = if back { (0..idx).rev().find(visible) } else { (idx + 1..nr * nc).find(visible) };
+        let ni = match next {
+            Some(ni) => ni,
+            None if !back => {
+                // Tab in the last cell adds a row.
+                let last = nr.saturating_sub(1);
+                self.execute("table.insertRowBelow", &json!({"id": t.shape, "row": last}))?;
+                return self.execute("text.edit", &json!({"id": t.shape, "cell": [last + 1, 0]}));
+            }
+            None => idx,
+        };
+        self.execute("text.edit", &json!({"id": t.shape, "cell": [ni / nc, ni % nc]}))?;
         self.execute("text.selectAll", &json!({}))
     }
 }

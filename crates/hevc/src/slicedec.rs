@@ -10,7 +10,11 @@ use crate::intra::{self, Refs};
 use crate::params::{Layout, Pps, Sps};
 use crate::picture::{FrameRef, RefPic};
 use crate::slice::{SliceHeader, SliceType};
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    ABS_MVD_GT0, ABS_MVD_GT1, CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CU_QP_DELTA_ABS, CU_SKIP, CU_TRANSQUANT_BYPASS, GT1, GT2, INTER_PRED_IDC,
+    INTRA_CHROMA, LAST_X_PREFIX, LAST_Y_PREFIX, MERGE_FLAG, MERGE_IDX, MVP_FLAG, PART_MODE, PRED_MODE, PREV_INTRA_LUMA, REF_IDX, RQT_ROOT_CBF,
+    SAO_MERGE, SAO_TYPE, SIG_COEFF, SPLIT_CU, SPLIT_TRANSFORM, TRANSFORM_SKIP,
+};
 use crate::tables::{CTX_IDX_MAP, LEVEL_SCALE, SCAN_4, qpc_420, scan_order};
 use crate::transform;
 use std::sync::Arc;
@@ -298,7 +302,7 @@ impl<'a> SliceDecoder<'a> {
         let sh = &job.sh;
         let (sps, pps) = (&*job.sps, &*job.pps);
         ensure!(sh.data_offset < job.rbsp.len(), "empty slice segment data");
-        let slice_qp = pps.init_qp + sh.qp_delta;
+        let slice_qp = pps.init_qp.checked_add(sh.qp_delta).ok_or_else(|| crate::Error::Invalid("SliceQpY out of range".into()))?;
         let init_type = match sh.slice_type {
             SliceType::I => 0,
             SliceType::P => {

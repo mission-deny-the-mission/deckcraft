@@ -139,7 +139,7 @@ fn poster_frame(s: &mut Session, p: &Value) -> Result<Value> {
     let data = s.doc()?.doc.media(m.media).map(|i| i.data.clone()).ok_or_else(|| EngineError::Other("the media data is missing".into()))?;
     let png = poster_png(&data, ms).ok_or_else(|| EngineError::Other("no frame could be decoded there".into()))?;
     let name = format!("poster{id}.png");
-    let poster = s.edit(|doc, _| Ok(doc.add_media(&name, "image/png", png)))?;
+    let poster = s.edit(|doc, _| doc.add_media(&name, "image/png", png).ok_or_else(|| bad("media.posterFrame", NO_ID_SPACE)))?;
     edit_shapes(s, &json!({"id": id}), "media.posterFrame", |sh| {
         if let ShapeKind::Media(m) = &mut sh.kind {
             m.poster = Some(poster);
@@ -226,6 +226,21 @@ mod tests {
         assert_eq!(i["status"]["positionMs"], 250);
         assert_eq!(i["status"]["state"], "playing");
         assert!(s.execute("media.posterFrame", &json!({})).is_err(), "audio has no poster frame");
+    }
+
+    #[test]
+    fn a_video_reopened_from_pptx_keeps_its_length_and_size() {
+        let mut s = Session::with_new();
+        let clip = include_bytes!("../../../media/tests/fixtures/clip-h264.mp4");
+        s.execute("insert.video", &json!({"name": "clip.mp4", "data": base64_encode(clip)})).expect("insert");
+        let before = s.execute("media.info", &json!({})).expect("info");
+        assert!(before["durationMs"].as_u64().is_some_and(|ms| ms > 0));
+        let saved = s.execute("file.saveBytes", &json!({"format": "pptx"})).expect("save");
+        s.execute("file.openBytes", &json!({"name": "deck.pptx", "data": saved["data"]})).expect("open");
+        let after = s.execute("media.info", &json!({})).expect("info");
+        for key in ["durationMs", "width", "height"] {
+            assert_eq!(after[key], before[key], "{key}");
+        }
     }
 
     #[test]

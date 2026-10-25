@@ -18,3 +18,6 @@ deckcraft-engine = { workspace = true }
 deckcraft-mcp = { workspace = true }
 deckcraft-storage = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+zip = { workspace = true }

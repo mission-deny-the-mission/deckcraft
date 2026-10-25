@@ -179,6 +179,21 @@ fn every_page_renders() {
     assert!(h.state_mut().run("app.backstage", json!({"page": "share"})).is_err(), "Share (cloud) isn't offered");
 }
 
+/// A starter template from File › New opens its deck and leaves the File tab.
+#[test]
+fn new_template_opens_a_starter_deck() {
+    let mut h = harness(new_app());
+    h.state_mut().run("app.backstage", json!({"page": "new"})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Briefing").click();
+    h.run_steps(3);
+    let doc = &h.state().session.active().unwrap().doc;
+    assert_eq!(doc.masters[0].theme.name, "Harbor");
+    assert_eq!(doc.slides[0].title(), "Weekly briefing");
+    assert_eq!(doc.slides.len(), 5);
+    assert!(h.state().backstage.is_none(), "the starter deck shows");
+}
+
 /// New and Home create presentations, which leaves the File tab.
 #[test]
 fn new_creates_a_presentation() {
@@ -217,6 +232,15 @@ fn open_lists_recent_files_and_opens_one() {
     h.run_steps(2);
     assert!(h.query_by_label("Other.pptx").is_none(), "the search box filters by name");
     h.get_by_label("Quarterly review.pptx").click();
+    h.run_steps(1);
+    // The file is read in the background (#350); its progress window shows meanwhile.
+    for _ in 0..300 {
+        if h.state().opening.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_steps(1);
+    }
     h.run_steps(3);
     assert_eq!(h.state().session.documents().len(), 2);
     assert_eq!(h.state().session.active().unwrap().path.as_deref(), Some(path.as_str()));
@@ -275,6 +299,32 @@ fn save_as_and_export_run_the_file_commands() {
     assert!(!h.state().session.active().unwrap().is_dirty());
     assert!(h.state().backstage.is_none());
     assert_eq!(asked.borrow().len(), 3, "no Save dialog for a presentation with a file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Export › Change File Type › PNG offers "Transparent background" (#784): the PNG it saves
+/// leaves the slide background out. Other types don't show the option.
+#[test]
+fn change_file_type_png_can_leave_the_background_transparent() {
+    let dir = temp_dir("png-clear");
+    let (services, _) = saving_into(&dir);
+    let mut h = harness(SlideApp::new(Session::with_new(), services));
+    h.state_mut().run("app.backstage", json!({"page": "export"})).unwrap();
+    h.run_steps(3);
+    click_on_page(&h, "Change File Type");
+    h.run_steps(3);
+    assert!(h.query_by_label("Transparent background").is_none(), "only PNG has the option");
+    click_on_page(&h, "PNG Picture (*.png)");
+    h.run_steps(2);
+    h.get_by_label("Transparent background").click();
+    h.run_steps(2);
+    assert!(h.state().backstage.as_ref().is_some_and(|b| b.png_transparent));
+    click_on_page(&h, "Save As");
+    h.run_steps(3);
+    let title = h.state().session.active().unwrap().title();
+    let png = std::fs::read(dir.join(format!("{title}.png"))).unwrap();
+    let img = deckcraft_render::decode_image(&png).unwrap();
+    assert_eq!(img.get_pixel(2, 2).0[3], 0, "the background is left out");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -347,6 +397,44 @@ fn info_shows_and_edits_the_properties() {
     assert!(h.state().backstage_open());
 }
 
+/// Leaving a property field with a click on another field keeps what was typed.
+#[test]
+fn info_keeps_a_property_draft_when_another_field_is_clicked() {
+    let mut h = harness(new_app());
+    h.state_mut().run("app.backstage", json!({"page": "info"})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, "Author").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Author").type_text("Ada");
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Title").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.active().unwrap().doc.props.author, "Ada");
+}
+
+/// Save straight from a property field saves what was typed (the side menu acts before the field
+/// is drawn again).
+#[test]
+fn info_saves_a_property_draft_when_save_is_clicked() {
+    let dir = temp_dir("info-save");
+    let path = dir.join("Draft.pptx").to_string_lossy().to_string();
+    let mut s = Session::with_new();
+    s.execute("file.saveAs", &json!({"path": path})).unwrap();
+    let mut h = harness(SlideApp::new(s, Services::default()));
+    h.state_mut().run("app.backstage", json!({"page": "info"})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, "Author").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Author").type_text("Ada");
+    h.run_steps(2);
+    click_nav(&h, "Save");
+    h.run_steps(3);
+    let doc = h.state().session.active().unwrap();
+    assert_eq!(doc.doc.props.author, "Ada");
+    assert!(!doc.is_dirty(), "the author went into the saved file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With nothing open the File tab is the start screen: Home, New and Open, no back arrow, and Esc
 /// has nowhere to go.
 #[test]
@@ -366,6 +454,34 @@ fn the_start_screen_is_file_home() {
     h.run_steps(3);
     assert_eq!(h.state().session.documents().len(), 1);
     assert!(h.state().backstage.is_none());
+}
+
+/// #346: a file picked in Open that can't be read used to drop back to the start screen without
+/// a word. The reason now shows over the start screen.
+#[test]
+fn a_file_that_cant_be_opened_says_why() {
+    let dir = temp_dir("unreadable");
+    let path = dir.join("Notes.pptx");
+    std::fs::write(&path, b"not a presentation").unwrap();
+    let picked = path.to_string_lossy().to_string();
+    let services = Services { pick_open: Some(Box::new(move |_: &str| Some(picked.clone()))), ..Default::default() };
+    let mut h = harness(SlideApp::new(Session::new(), services));
+    h.state_mut().run("app.backstage", json!({"page": "open"})).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Browse").click();
+    h.run_steps(3);
+    // The file is read in the background (#350): wait for it.
+    for _ in 0..500 {
+        if h.state().opening.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(h.state().session.documents().is_empty());
+    assert!(h.query_by_label_contains("not a presentation DeckCraft can read").is_some(), "the error is on screen");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Print previews the pages its settings make and prints through a PDF opened in the system
@@ -435,4 +551,30 @@ fn print_slides_follow_the_settings() {
     bs.print_layout = "h6";
     assert_eq!(print_params(&bs, &[1, 3])["perPage"], 6);
     assert_eq!(print_params(&bs, &[1, 3])["layout"], "handouts");
+    assert_eq!(print_params(&bs, &[1])["paper"], "letter");
+    assert_eq!(print_page_size(&bs, &doc), (612.0, 792.0));
+    bs.print_paper = "a4";
+    bs.print_landscape = true;
+    assert_eq!(print_params(&bs, &[1])["orientation"], "landscape");
+    let (w, h) = print_page_size(&bs, &doc);
+    assert!((w - 841.89).abs() < 0.01 && (h - 595.28).abs() < 0.01);
+    bs.print_layout = "slides";
+    assert_eq!(print_page_size(&bs, &doc), (doc.slide_size.width as f32, doc.slide_size.height as f32), "slides print slide-shaped");
+}
+
+/// Options in the File tab opens the Preferences dialog, and Cancel closes it (#782, #752).
+#[test]
+fn options_in_backstage_opens_preferences_and_cancel_closes_it() {
+    let mut h = harness(new_app());
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    assert!(h.state().backstage_open());
+    h.get_by_label("Options").click();
+    h.run_steps(3);
+    assert!(h.state().dialog.is_some(), "Options opens Preferences dialog");
+    assert_eq!(h.state().dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
+    h.query_all_by_role_and_label(Role::Button, "Cancel").next().expect("Cancel button").click_accesskit();
+    h.run_steps(3);
+    assert!(h.state().dialog.is_none(), "Cancel closes Preferences dialog");
+    assert!(h.state().backstage_open(), "Backstage remains open");
 }
