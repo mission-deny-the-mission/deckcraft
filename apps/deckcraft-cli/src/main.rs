@@ -678,8 +678,7 @@ fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storag
             if arg_value(args, "--store-root").is_some() {
                 return Err(format!("{command}: --store-root is for --store local, not webdav"));
             }
-            let (user, password, token) =
-                (arg_value(args, "--store-user"), arg_value(args, "--store-password"), arg_value(args, "--store-token"));
+            let (user, password, token) = (arg_value(args, "--store-user"), arg_value(args, "--store-password"), arg_value(args, "--store-token"));
             let token = token.or_else(|| std::env::var("CRAFT_DAV_TOKEN").ok().filter(|t| !t.is_empty()));
             let backend = if let Some(t) = token {
                 if user.is_some() || password.is_some() {
@@ -689,9 +688,7 @@ fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storag
             } else {
                 deckcraft_storage::webdav::WebDavBackend::new(&url, user.as_deref(), password.as_deref())
             };
-            backend
-                .map(|b| Box::new(b) as Box<dyn deckcraft_storage::StorageBackend>)
-                .map_err(|e| format!("{command}: {e}"))
+            backend.map(|b| Box::new(b) as Box<dyn deckcraft_storage::StorageBackend>).map_err(|e| format!("{command}: {e}"))
         }
         other => Err(format!("{command}: unknown --store `{other}` (local or webdav)")),
     }
@@ -700,8 +697,7 @@ fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storag
 /// The positional arguments of a `store-*` command: option values (`--store local`, …) are not
 /// positionals, wherever they appear.
 fn store_positionals(args: &[String]) -> Vec<String> {
-    const TAKES_VALUE: &[&str] =
-        &["--store", "--store-root", "--store-url", "--store-user", "--store-password", "--store-token", "--etag"];
+    const TAKES_VALUE: &[&str] = &["--store", "--store-root", "--store-url", "--store-user", "--store-password", "--store-token", "--etag"];
     let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -724,8 +720,7 @@ fn store_command(command: &str, rest: &[String]) -> Result<(), String> {
         "store-write" => {
             let (path, file) = (pos(0)?, pos(1)?);
             let bytes = std::fs::read(&file).map_err(|e| format!("{file}: {e}"))?;
-            let opts =
-                deckcraft_storage::WriteOptions { if_match: arg_value(rest, "--etag"), atomic: rest.iter().any(|a| a == "--atomic") };
+            let opts = deckcraft_storage::WriteOptions { if_match: arg_value(rest, "--etag"), atomic: rest.iter().any(|a| a == "--atomic") };
             let meta = store.write(&path, &bytes, &opts).map_err(|e| format!("{path}: {e}"))?;
             let summary = serde_json::to_string_pretty(&json!({"path": path, "size": meta.size, "etag": meta.etag})).unwrap_or_default();
             outln!("{summary}");
@@ -751,9 +746,7 @@ fn store_command(command: &str, rest: &[String]) -> Result<(), String> {
         }
         "store-list" => {
             let prefix = positional.first().cloned().unwrap_or_default();
-            let entries = store
-                .list(&prefix)
-                .map_err(|e| format!("{}: {e}", if prefix.is_empty() { "(root)" } else { &prefix }))?;
+            let entries = store.list(&prefix).map_err(|e| format!("{}: {e}", if prefix.is_empty() { "(root)" } else { &prefix }))?;
             let list: Vec<Value> =
                 entries.iter().map(|e| json!({"path": e.path, "size": e.meta.size, "etag": e.meta.etag, "isDir": e.meta.is_dir})).collect();
             let summary = serde_json::to_string_pretty(&list).unwrap_or_default();
@@ -780,10 +773,9 @@ fn store_command(command: &str, rest: &[String]) -> Result<(), String> {
         }
         "store-recover" => {
             let report = store.recover().map_err(|e| e.to_string())?;
-            let summary = serde_json::to_string_pretty(
-                &json!({"completed": report.completed, "dropped": report.dropped, "removedTemp": report.removed_temp}),
-            )
-            .unwrap_or_default();
+            let summary =
+                serde_json::to_string_pretty(&json!({"completed": report.completed, "dropped": report.dropped, "removedTemp": report.removed_temp}))
+                    .unwrap_or_default();
             outln!("{summary}");
             Ok(())
         }
@@ -937,11 +929,8 @@ mod store_tests {
         assert!(open_store("store-write", &args(&["--store", "tape", "--store-root", "x"])).is_err());
         assert!(open_store("store-write", &args(&["--store", "local", "--store-root", "x", "--store-url", "http://h/d/"])).is_err());
         assert!(
-            open_store(
-                "store-write",
-                &args(&["--store", "webdav", "--store-url", "http://h/d/", "--store-token", "t", "--store-user", "u"])
-            )
-            .is_err()
+            open_store("store-write", &args(&["--store", "webdav", "--store-url", "http://h/d/", "--store-token", "t", "--store-user", "u"]))
+                .is_err()
         );
         assert!(open_store("store-write", &args(&["--store", "webdav", "--store-url", "https://h/d/"])).is_err());
         let dir = std::env::temp_dir().join(format!("deckcraft-cli-store-test-{}", std::process::id()));
