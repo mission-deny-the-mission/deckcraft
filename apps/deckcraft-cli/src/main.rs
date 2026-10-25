@@ -661,7 +661,7 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
 /// Open the storage backend named by the `--store*` flags: `local` (a folder at `--store-root`)
 /// or `webdav` (a collection at `--store-url`, Basic auth via `--store-user`/`--store-password`
 /// or an OIDC/Bearer token via `--store-token`; the two schemes are mutually exclusive).
-/// The token may also arrive via `$CRAFT_DAV_TOKEN` (k8s secretKeyRef) instead of argv.
+/// The token may also arrive via `$CRAFT_DAV_TOKEN` instead of argv, where other processes can read it.
 fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storage::StorageBackend>, String> {
     match arg_value(args, "--store").as_deref().unwrap_or("local") {
         "local" => {

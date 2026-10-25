@@ -1,13 +1,13 @@
 //! Live oCIS round-trip through [`WebDavBackend`](deckcraft_storage::webdav::WebDavBackend).
 //!
 //! Hermetic by default: this test does nothing unless both `CRAFT_DAV_URL` (the WebDAV
-//! collection, e.g. `http://proxy.ocis.svc.cluster.local:9200/remote.php/dav/files/USER/`)
+//! collection, e.g. `http://ocis.lan:9200/remote.php/dav/files/USER/`)
 //! and `CRAFT_DAV_TOKEN` (a fresh OIDC Bearer token) are set — and it is `#[ignore]`d so
 //! plain `cargo test` never touches the network. Run it explicitly:
 //!
 //! ```sh
-//! CRAFT_DAV_URL=http://proxy.ocis.svc.cluster.local:9200/remote.php/dav/files/ocis-e2e-tmp/ \
-//! CRAFT_DAV_TOKEN="$(cat e2e-at.txt)" \
+//! CRAFT_DAV_URL=http://ocis.lan:9200/remote.php/dav/files/alice/ \
+//! CRAFT_DAV_TOKEN="$(cat token.txt)" \
 //!   cargo test -p deckcraft-storage --test webdav_live -- --ignored --nocapture
 //! ```
 //!

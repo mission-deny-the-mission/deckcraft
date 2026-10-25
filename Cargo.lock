@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "deckcraft-storage"
-version = "0.6.1"
+version = "0.10.0"
 dependencies = [
  "base64",
  "deckcraft-model",
