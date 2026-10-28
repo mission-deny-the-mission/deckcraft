@@ -162,8 +162,10 @@ STORE picks the backend, the same for every store-* subcommand:
   --store webdav --store-url URL            a WebDAV collection, e.g. http://nas.lan/remote.php/dav/files/alice/Decks/
       [--store-user U --store-password P]   Basic auth, or
       [--store-token T]                     a Bearer token (also read from $CRAFT_DAV_TOKEN); not both
+      [--store-insecure-http]               send the credentials to a host that is not loopback
 
-WebDAV is plain http only (LAN, VPN or SSH tunnel); https URLs are refused.
+WebDAV is plain http only (LAN, VPN or SSH tunnel); https URLs are refused. Credentials are sent only
+to a loopback host unless --store-insecure-http says the network is trusted.
 
   deckcraft-cli store-write Decks/q3.pptx q3.pptx --store local --store-root ~/Sync",
     },

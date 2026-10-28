@@ -25,7 +25,8 @@ fn env(name: &str) -> String {
 fn bearer_roundtrip_against_ocis() {
     let url = env("CRAFT_DAV_URL");
     let token = env("CRAFT_DAV_TOKEN");
-    let store = WebDavBackend::with_bearer(&url, &token).unwrap();
+    // The tester names the server, so the network is theirs to trust (plain http, no TLS).
+    let store = WebDavBackend::with_bearer(&url, &token).unwrap().allow_cleartext_credentials();
 
     let name = format!("deckcraft-live-{}.bin", std::process::id());
     let payload = b"PK\x03\x04deckcraft-live-rust-backend".to_vec();

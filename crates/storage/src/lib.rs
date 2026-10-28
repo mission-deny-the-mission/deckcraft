@@ -175,6 +175,11 @@ pub(crate) fn clean_path(path: &str) -> Result<String, StorageError> {
             _ if part.chars().any(|c| c.is_control()) => {
                 return Err(StorageError::BadPath(format!("{path}: control characters are not storage names")));
             }
+            // `C:/x`, `C:x` and `name:stream` re-root or redirect a Windows join; storage names
+            // must stay portable across the platforms a synced folder is opened on.
+            _ if part.contains(':') => {
+                return Err(StorageError::BadPath(format!("{path}: `:` is not allowed in storage names")));
+            }
             _ => parts.push(part),
         }
     }
@@ -198,5 +203,8 @@ mod tests {
         assert!(clean_path("../up").is_err());
         assert!(clean_path("a/../../b").is_err());
         assert!(clean_path("a/./b").unwrap() == "a/b");
+        assert!(clean_path("C:/Windows/x.pptx").is_err());
+        assert!(clean_path("C:x.pptx").is_err());
+        assert!(clean_path("a/b.pptx:stream").is_err());
     }
 }

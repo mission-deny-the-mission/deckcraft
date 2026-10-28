@@ -688,7 +688,12 @@ fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storag
             } else {
                 deckcraft_storage::webdav::WebDavBackend::new(&url, user.as_deref(), password.as_deref())
             };
-            backend.map(|b| Box::new(b) as Box<dyn deckcraft_storage::StorageBackend>).map_err(|e| format!("{command}: {e}"))
+            // Credentials go only to a loopback host over plain HTTP unless the network is trusted.
+            let insecure = args.iter().any(|a| a == "--store-insecure-http");
+            backend
+                .map(|b| if insecure { b.allow_cleartext_credentials() } else { b })
+                .map(|b| Box::new(b) as Box<dyn deckcraft_storage::StorageBackend>)
+                .map_err(|e| format!("{command}: {e}"))
         }
         other => Err(format!("{command}: unknown --store `{other}` (local or webdav)")),
     }
