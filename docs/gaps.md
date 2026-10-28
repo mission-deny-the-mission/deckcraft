@@ -209,7 +209,7 @@ Detail in [file-format-parity.md](file-format-parity.md).
 Animations ▸ Preview and the pane's Play All play the current slide's animations on the editor
 canvas (Escape or a click stops them); with an effect selected the pane's button reads Play From
 and starts at that effect. The pane has an advanced timeline with draggable bars
-(`crates/ui-egui/src/animtimeline.rs`). Still open: most of the effect gallery. Detail in
+(`crates/ui-egui/src/panels/animtimeline.rs`). Still open: most of the effect gallery. Detail in
 [animation-parity.md](animation-parity.md). 7–13 h; the pane is a
 **beta blocker**.
 
@@ -259,8 +259,9 @@ and starts at that effect. The pane has an advanced timeline with draggable bars
   for Add to Dictionary. Red squiggles on the current slide come from a worker thread, with a
   context menu to correct, ignore or add; table cells and speaker notes are squiggled too, each
   with a right-click menu; repeated words (`the the`) are flagged with Delete Repeated Word;
-  Review › Language marks the selection's proofing language or Do Not Check Spelling
-  (`lang`/`noProof` round-trip in PPTX). No grammar checking. The web build checks on the UI
+  Review › Language marks the selection's proofing language or Do Not Check Spelling, or the
+  whole presentation's (`format.languageAll`: every run, notes, masters, layouts and the default
+  text style) (`lang`/`noProof` round-trip in PPTX). No grammar checking. The web build checks on the UI
   thread a few milliseconds per frame. No dictionaries ship with DeckCraft, so without one
   installed (always on Windows and the web) only a short list of common misspellings is found.
   `review.thesaurus` looks up the selected word (checklist row partial). AutoCorrect has

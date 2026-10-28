@@ -74,7 +74,7 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(rest)),
         Some(c) if c.starts_with("store-") => report(store_command(c, rest)),
         Some("links") => {
-            use deckcraft_engine::links::*;
+            use deckcraft_engine::links::{APP_PAGE, DISCORD, GITHUB, WEBSITE};
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}");
             ExitCode::SUCCESS
         }
@@ -209,7 +209,7 @@ fn bench(args: &[String]) -> Result<(), String> {
         ("save .deckcraft", time_ms(runs, || save_bytes(&doc, "deckcraft").map(|_| ()).map_err(e))?),
         ("save .pptx", time_ms(runs, || save_bytes(&doc, "pptx").map(|_| ()).map_err(e))?),
         ("open .pptx", time_ms(runs, || open_presentation("bench.pptx", &pptx).map(|_| ()).map_err(e))?),
-        ("export .pdf", time_ms(runs.min(3), || save_bytes(&doc, "pdf").map(|_| ()).map_err(e))?),
+        ("export .pdf", time_ms(runs, || save_bytes(&doc, "pdf").map(|_| ()).map_err(e))?),
     ];
     let render_total: f64 = per_slide.iter().map(|m| m.0).sum();
     let render_max = per_slide.iter().map(|m| m.1).fold(0.0, f64::max);
