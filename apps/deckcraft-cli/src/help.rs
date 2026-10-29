@@ -160,6 +160,7 @@ STORE picks the backend, the same for every store-* subcommand:
 
   --store local --store-root DIR            a local, NAS or synced folder (the default backend)
   --store webdav --store-url URL            a WebDAV collection, e.g. http://nas.lan/remote.php/dav/files/alice/Decks/
+                                            (a --store-url alone picks webdav)
       [--store-user U --store-password P]   Basic auth, or
       [--store-token T]                     a Bearer token (also read from $CRAFT_DAV_TOKEN); not both
       [--store-insecure-http]               send the credentials to a host that is not loopback

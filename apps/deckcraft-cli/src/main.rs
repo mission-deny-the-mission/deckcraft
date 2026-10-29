@@ -663,7 +663,9 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
 /// or an OIDC/Bearer token via `--store-token`; the two schemes are mutually exclusive).
 /// The token may also arrive via `$CRAFT_DAV_TOKEN` instead of argv, where other processes can read it.
 fn open_store(command: &str, args: &[String]) -> Result<Box<dyn deckcraft_storage::StorageBackend>, String> {
-    match arg_value(args, "--store").as_deref().unwrap_or("local") {
+    // Without --store, a --store-url names a WebDAV collection; otherwise it's a local folder.
+    let default_kind = if arg_value(args, "--store-url").is_some() { "webdav" } else { "local" };
+    match arg_value(args, "--store").as_deref().unwrap_or(default_kind) {
         "local" => {
             let root = arg_value(args, "--store-root").ok_or_else(|| format!("{command}: --store local needs --store-root DIR"))?;
             if arg_value(args, "--store-url").is_some() {
@@ -765,8 +767,9 @@ fn store_command(command: &str, rest: &[String]) -> Result<(), String> {
             Ok(())
         }
         "store-probe" => {
-            let caps = store.capabilities();
             let probe = store.probe().map_err(|e| e.to_string())?;
+            // What the server said, not what the backend assumed before asking.
+            let caps = &probe.capabilities;
             let summary = serde_json::to_string_pretty(&json!({
                 "atomicWrite": caps.atomic_write, "conditionalWrite": caps.conditional_write, "list": caps.list,
                 "etag": caps.etag, "persistent": caps.persistent,
@@ -933,6 +936,9 @@ mod store_tests {
         assert!(open_store("store-write", &args(&["--store", "webdav"])).is_err());
         assert!(open_store("store-write", &args(&["--store", "tape", "--store-root", "x"])).is_err());
         assert!(open_store("store-write", &args(&["--store", "local", "--store-root", "x", "--store-url", "http://h/d/"])).is_err());
+        assert!(open_store("store-write", &args(&["--store", "local", "--store-url", "http://h/d/"])).is_err());
+        // A --store-url alone picks WebDAV (opening does not touch the network).
+        assert!(open_store("store-write", &args(&["--store-url", "http://127.0.0.1:9/d/"])).is_ok());
         assert!(
             open_store("store-write", &args(&["--store", "webdav", "--store-url", "http://h/d/", "--store-token", "t", "--store-user", "u"]))
                 .is_err()
